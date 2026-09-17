@@ -1,0 +1,31 @@
+# Standard Flutter-generated build/tooling artifacts. pubspec.lock is
+# intentionally NOT listed here — this is an app (publish_to: 'none'),
+# and apps should commit their lockfile for reproducible builds.
+
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+
+# flutter create --platforms=android,ios . (see README.md) generates
+# these; not committed here since they're regenerated tooling output,
+# not hand-authored source.
+android/
+ios/
+
+*.iml
+.idea/
+
+/testdata/private/
+/.tools/
+/bin/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+go.work
+go.work.sum
