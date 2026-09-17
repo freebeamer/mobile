@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:freebeamer_mobile/core/error/exceptions.dart';
+import 'package:freebeamer_mobile/data/datasources/device_auth_remote_data_source.dart';
 import 'package:freebeamer_mobile/data/datasources/telemetry_local_data_source.dart';
 import 'package:freebeamer_mobile/data/datasources/telemetry_remote_data_source.dart';
 import 'package:freebeamer_mobile/data/models/telemetry_sample.dart';
@@ -24,6 +26,15 @@ class FakeRemoteDataSource implements ITelemetryRemoteDataSource {
   int negotiateCalls = 0;
   Duration Function()? delay;
 
+  /// Simulates the relay rejecting the current session token: the next
+  /// N post()/negotiate() calls throw TelemetryAuthException instead of
+  /// the normal shouldFail/negotiateError logic, regardless of apiKey —
+  /// a real test asserting the retry actually installed a *new* token
+  /// should check the apiKey seen on the call that finally succeeds via
+  /// [postedApiKeys].
+  int authFailuresRemaining = 0;
+  final List<String> postedApiKeys = [];
+
   @override
   Future<int> negotiate(
       {required String endpoint,
@@ -31,6 +42,10 @@ class FakeRemoteDataSource implements ITelemetryRemoteDataSource {
       Duration timeout = const Duration(seconds: 5)}) async {
     negotiateCalls++;
     if (delay != null) await Future.delayed(delay!());
+    if (authFailuresRemaining > 0) {
+      authFailuresRemaining--;
+      throw TelemetryAuthException('simulated 401');
+    }
     if (negotiateError != null) throw negotiateError!;
     return negotiateVersion;
   }
@@ -43,11 +58,74 @@ class FakeRemoteDataSource implements ITelemetryRemoteDataSource {
     Duration timeout = const Duration(seconds: 5),
   }) async {
     if (delay != null) await Future.delayed(delay!());
+    if (authFailuresRemaining > 0) {
+      authFailuresRemaining--;
+      throw TelemetryAuthException('simulated 401');
+    }
     if (shouldFail != null && shouldFail!(sample)) {
       throw TelemetryException('simulated failure');
     }
     postedIds.add(sample.deviceId);
+    postedApiKeys.add(apiKey);
     posted.add(sample);
+  }
+}
+
+/// A fake IDeviceAuthRemoteDataSource — every call is a scripted return
+/// value/error, no real HTTP.
+class FakeDeviceAuthRemoteDataSource implements IDeviceAuthRemoteDataSource {
+  PairResult Function()? pairResult;
+  Object? pairError;
+  Uint8List challengeNonce = Uint8List.fromList(List.filled(32, 7));
+  Object? challengeError;
+  String Function()? sessionTokenFor;
+  Object? sessionError;
+  int logoutCalls = 0;
+  String? lastSessionClientId;
+  Uint8List? lastSignature;
+
+  @override
+  Future<PairResult> pair({
+    required String relayUrl,
+    required String pairingToken,
+    required Uint8List publicKey,
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    if (pairError != null) throw pairError!;
+    return pairResult?.call() ??
+        const PairResult(clientId: 'client-1', displayName: 'Test Client');
+  }
+
+  @override
+  Future<Uint8List> challenge({
+    required String relayUrl,
+    required String clientId,
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    if (challengeError != null) throw challengeError!;
+    return challengeNonce;
+  }
+
+  @override
+  Future<String> createSession({
+    required String relayUrl,
+    required String clientId,
+    required Uint8List signature,
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    lastSessionClientId = clientId;
+    lastSignature = signature;
+    if (sessionError != null) throw sessionError!;
+    return sessionTokenFor?.call() ?? 'session-token';
+  }
+
+  @override
+  Future<void> logout({
+    required String relayUrl,
+    required String sessionToken,
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    logoutCalls++;
   }
 }
 

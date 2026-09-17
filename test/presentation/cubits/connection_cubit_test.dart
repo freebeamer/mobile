@@ -1,19 +1,44 @@
 import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:freebeamer_mobile/core/telemetry/telemetry_upload_service.dart';
 import 'package:freebeamer_mobile/core/telemetry/telemetry_upload_status.dart';
+import 'package:freebeamer_mobile/data/models/device_pairing.dart';
 import 'package:freebeamer_mobile/data/models/mhd_field.dart';
 import 'package:freebeamer_mobile/data/models/mhd_value.dart';
 import 'package:freebeamer_mobile/data/models/telemetry_sample.dart';
 import 'package:freebeamer_mobile/data/models/telemetry_config.dart';
 import 'package:freebeamer_mobile/domain/repositories/telemetry_repository.dart';
 import 'package:freebeamer_mobile/domain/repositories/vehicle_repository.dart';
+import 'package:freebeamer_mobile/domain/usecases/authenticate_device.dart';
 import 'package:freebeamer_mobile/domain/usecases/connect_to_vehicle.dart';
 import 'package:freebeamer_mobile/domain/usecases/disconnect_from_vehicle.dart';
 import 'package:freebeamer_mobile/domain/usecases/read_live_sample.dart';
 import 'package:freebeamer_mobile/domain/usecases/negotiate_telemetry.dart';
 import 'package:freebeamer_mobile/presentation/cubits/connection_cubit.dart';
 import 'package:freebeamer_mobile/presentation/cubits/connection_state.dart';
+
+import '../../support/fakes.dart';
+
+/// Stands in for the real buildTelemetryConfig (which calls
+/// path_provider's platform channel, unavailable in a bare unit test)
+/// — see ConnectionCubit's injectable buildTelemetryConfig param.
+Future<TelemetryConfig> fakeBuildTelemetryConfig({
+  required String endpoint,
+  required String clientId,
+  required String sessionToken,
+}) async =>
+    TelemetryConfig(endpoint: endpoint, apiKey: sessionToken, bufferPath: 'buffer.jsonl');
+
+final testPairing = DevicePairing(
+  clientId: 'client-1',
+  displayName: 'Bay 3',
+  relayUrl: 'https://relay.example',
+  privateKey: Uint8List.fromList(List.filled(32, 1)),
+  publicKey: Uint8List.fromList(List.filled(32, 2)),
+  pairedAt: DateTime(2026, 9, 17),
+);
 
 class FakeVehicle implements IVehicleRepository {
   int connections = 0;
@@ -69,11 +94,16 @@ class FakeTelemetryUploadService implements ITelemetryUploadService {
   late void Function() stopCallback;
   bool startCalled = false;
   bool stopCalled = false;
+  Future<String?> Function()? capturedReauthenticate;
 
   @override
-  Future<void> start(
-      {required TelemetryConfig config, required Duration interval}) async {
+  Future<void> start({
+    required TelemetryConfig config,
+    required Duration interval,
+    Future<String?> Function()? reauthenticate,
+  }) async {
     startCalled = true;
+    capturedReauthenticate = reauthenticate;
   }
 
   @override
@@ -103,14 +133,12 @@ void main() {
         disconnectFromVehicle: DisconnectFromVehicle(vehicle),
         readLiveSample: ReadLiveSample(vehicle),
         telemetryUploadService: uploadService,
-        negotiateTelemetry: NegotiateTelemetry(telemetryRepo));
+        negotiateTelemetry: NegotiateTelemetry(telemetryRepo),
+        authenticateDevice: AuthenticateDevice(FakeDeviceAuthRemoteDataSource()),
+        buildTelemetryConfig: fakeBuildTelemetryConfig);
     addTearDown(cubit.close);
     final running = cubit.start(
-        address: 'mock',
-        port: 13400,
-        deviceId: 'android',
-        telemetryConfig:
-            const TelemetryConfig(endpoint: '', apiKey: '', bufferPath: ''));
+        pairing: testPairing, address: 'mock', port: 13400, deviceId: 'android');
     cubit.stop();
     telemetryRepo.pending!.complete(2);
     await running;
@@ -130,16 +158,18 @@ void main() {
           disconnectFromVehicle: DisconnectFromVehicle(vehicle),
           readLiveSample: ReadLiveSample(vehicle),
           telemetryUploadService: uploadService,
-          negotiateTelemetry: NegotiateTelemetry(telemetryRepo));
+          negotiateTelemetry: NegotiateTelemetry(telemetryRepo),
+          authenticateDevice:
+              AuthenticateDevice(FakeDeviceAuthRemoteDataSource()),
+          buildTelemetryConfig: fakeBuildTelemetryConfig);
       uploadService.stopCallback = cubit.stop;
       addTearDown(cubit.close);
       for (var run = 0; run < 2; run++) {
         await cubit.start(
+            pairing: testPairing,
             address: 'mock',
             port: 13400,
             deviceId: 'android',
-            telemetryConfig:
-                const TelemetryConfig(endpoint: '', apiKey: '', bufferPath: ''),
             sampleInterval: Duration.zero);
       }
       final samples = uploadService.samples;
@@ -162,4 +192,58 @@ void main() {
       }
     });
   }
+
+  test('authenticates before streaming and exposes the session token',
+      () async {
+    final vehicle = FakeVehicle();
+    final telemetryRepo = FakeTelemetryRepository(2);
+    final uploadService = FakeTelemetryUploadService();
+    final deviceAuth = FakeDeviceAuthRemoteDataSource()
+      ..sessionTokenFor = () => 'token-abc';
+    final cubit = ConnectionCubit(
+        connectToVehicle: ConnectToVehicle(vehicle),
+        disconnectFromVehicle: DisconnectFromVehicle(vehicle),
+        readLiveSample: ReadLiveSample(vehicle),
+        telemetryUploadService: uploadService,
+        negotiateTelemetry: NegotiateTelemetry(telemetryRepo),
+        authenticateDevice: AuthenticateDevice(deviceAuth),
+        buildTelemetryConfig: fakeBuildTelemetryConfig);
+    uploadService.stopCallback = cubit.stop;
+    addTearDown(cubit.close);
+    await cubit.start(
+        pairing: testPairing,
+        address: 'mock',
+        port: 13400,
+        deviceId: 'android',
+        sampleInterval: Duration.zero);
+    expect(cubit.currentSessionToken, 'token-abc');
+  });
+
+  test('an unreachable relay at start does not block the vehicle connection',
+      () async {
+    final vehicle = FakeVehicle();
+    final telemetryRepo = FakeTelemetryRepository(2);
+    final uploadService = FakeTelemetryUploadService();
+    final deviceAuth = FakeDeviceAuthRemoteDataSource()
+      ..challengeError = Exception('offline');
+    final cubit = ConnectionCubit(
+        connectToVehicle: ConnectToVehicle(vehicle),
+        disconnectFromVehicle: DisconnectFromVehicle(vehicle),
+        readLiveSample: ReadLiveSample(vehicle),
+        telemetryUploadService: uploadService,
+        negotiateTelemetry: NegotiateTelemetry(telemetryRepo),
+        authenticateDevice: AuthenticateDevice(deviceAuth),
+        buildTelemetryConfig: fakeBuildTelemetryConfig);
+    uploadService.stopCallback = cubit.stop;
+    addTearDown(cubit.close);
+    await cubit.start(
+        pairing: testPairing,
+        address: 'mock',
+        port: 13400,
+        deviceId: 'android',
+        sampleInterval: Duration.zero);
+    expect(vehicle.connections, 1);
+    expect(uploadService.startCalled, isTrue);
+    expect(cubit.currentSessionToken, isNull);
+  });
 }

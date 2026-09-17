@@ -1,10 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../core/di/service_locator.dart';
 import '../../core/telemetry/telemetry_upload_status.dart';
-import '../../data/models/telemetry_config.dart';
+import '../../data/models/device_pairing.dart';
+import '../../domain/usecases/logout_device.dart';
 import '../cubits/connection_cubit.dart';
 import '../cubits/connection_state.dart';
 
@@ -12,17 +15,17 @@ import '../cubits/connection_state.dart';
 /// a client-side sanity check, not a dashboard. Gauges/charts/history
 /// are the desktop app's (or a future web dashboard's) job.
 class StatusScreen extends StatefulWidget {
+  final DevicePairing pairing;
   final String host;
   final int port;
   final String deviceId;
-  final TelemetryConfig telemetryConfig;
 
   const StatusScreen({
     super.key,
+    required this.pairing,
     required this.host,
     required this.port,
     required this.deviceId,
-    required this.telemetryConfig,
   });
 
   @override
@@ -31,6 +34,7 @@ class StatusScreen extends StatefulWidget {
 
 class _StatusScreenState extends State<StatusScreen> with WidgetsBindingObserver {
   late final ConnectionCubit _cubit;
+  final LogoutDevice _logoutDevice = sl<LogoutDevice>();
 
   @override
   void initState() {
@@ -46,10 +50,10 @@ class _StatusScreenState extends State<StatusScreen> with WidgetsBindingObserver
     // in the foreground.
     WakelockPlus.enable();
     _cubit.start(
+      pairing: widget.pairing,
       address: widget.host,
       port: widget.port,
       deviceId: widget.deviceId,
-      telemetryConfig: widget.telemetryConfig,
     );
   }
 
@@ -60,10 +64,19 @@ class _StatusScreenState extends State<StatusScreen> with WidgetsBindingObserver
     }
   }
 
+  /// Leaving this screen "logs out" of the tuning session — the relay
+  /// session token is revoked (best-effort; see LogoutDevice), but the
+  /// device's DevicePairing itself is untouched, so the tuners panel
+  /// still offers one-tap reconnect afterward without rescanning.
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _cubit.stop();
+    final sessionToken = _cubit.currentSessionToken;
+    if (sessionToken != null && sessionToken.isNotEmpty) {
+      unawaited(_logoutDevice(
+          relayUrl: widget.pairing.relayUrl, sessionToken: sessionToken));
+    }
     _cubit.close();
     WakelockPlus.disable();
     super.dispose();

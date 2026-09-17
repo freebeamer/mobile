@@ -79,7 +79,21 @@ abstract class ITelemetryUploadService {
   /// prevents overlapping sessions, but turns any future violation of that
   /// invariant into a loud error instead of a silent credential leak
   /// across destinations.
-  Future<void> start({required TelemetryConfig config, required Duration interval});
+  ///
+  /// [reauthenticate], if given, is called at most once per delivery
+  /// attempt when the relay rejects config's current session token
+  /// (TelemetryAuthException — see AuthenticateDevice) — its result
+  /// replaces the running config's apiKey and that one delivery is
+  /// retried immediately, so a routine 24h token expiry never
+  /// interrupts a streaming session or surfaces as a user-visible
+  /// error. A second consecutive auth failure (or a null result,
+  /// meaning re-authentication itself couldn't produce a token) falls
+  /// through to the normal failure/backoff path instead of looping.
+  Future<void> start({
+    required TelemetryConfig config,
+    required Duration interval,
+    Future<String?> Function()? reauthenticate,
+  });
 
   /// Adds sample to the in-memory queue. Synchronous and non-blocking: a
   /// full queue drops the oldest queued sample (counted via [status],
@@ -122,6 +136,7 @@ class TelemetryUploadServiceImpl implements ITelemetryUploadService {
   AcquisitionQueue? _queue;
   final _fileLock = _AsyncMutex();
   TelemetryConfig? _config;
+  Future<String?> Function()? _reauthenticate;
   Duration _interval = const Duration(milliseconds: 200);
   bool _running = false;
   bool _stopRequested = false;
@@ -148,8 +163,11 @@ class TelemetryUploadServiceImpl implements ITelemetryUploadService {
   /// invariant into a loud error instead of a silent credential leak
   /// across destinations.
   @override
-  Future<void> start(
-      {required TelemetryConfig config, required Duration interval}) async {
+  Future<void> start({
+    required TelemetryConfig config,
+    required Duration interval,
+    Future<String?> Function()? reauthenticate,
+  }) async {
     if (_running) {
       if (_config != config) {
         throw StateError(
@@ -160,6 +178,7 @@ class TelemetryUploadServiceImpl implements ITelemetryUploadService {
     _running = true;
     _stopRequested = false;
     _config = config;
+    _reauthenticate = reauthenticate;
     _interval = interval;
     _queue = AcquisitionQueue();
     _status = const TelemetryUploadStatus();
@@ -277,7 +296,7 @@ class TelemetryUploadServiceImpl implements ITelemetryUploadService {
           break;
         }
         try {
-          final deliveredAt = await _deliver(sample);
+          final deliveredAt = await _deliverWithReauth(sample);
           final catchup = deliveredAt.difference(sample.timestamp) > threshold;
           if (catchup && !catchingUp) {
             catchingUp = true;
@@ -334,6 +353,26 @@ class TelemetryUploadServiceImpl implements ITelemetryUploadService {
 
       _status = _status.copyWith(clearError: true, spoolPending: newPending);
       backoff = defaultInitialBackoff;
+    }
+  }
+
+  /// Delivers sample, retrying exactly once via [_reauthenticate] if the
+  /// relay rejects the current session token — see start()'s doc
+  /// comment for the full contract.
+  Future<DateTime> _deliverWithReauth(TelemetrySample sample) async {
+    try {
+      return await _deliver(sample);
+    } on TelemetryAuthException {
+      final reauthenticate = _reauthenticate;
+      if (reauthenticate == null) rethrow;
+      final token = await reauthenticate();
+      if (token == null) rethrow;
+      _config = _config!.copyWith(apiKey: token);
+      // Force fresh negotiation under the new token rather than trusting
+      // a cached result obtained with the now-invalid one.
+      _negotiatedVersion = null;
+      _negotiatedAt = null;
+      return _deliver(sample);
     }
   }
 

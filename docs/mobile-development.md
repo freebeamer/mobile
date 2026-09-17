@@ -120,11 +120,12 @@ Phase 3 section for the full rationale.
 Clean architecture, three layers:
 
 - **`lib/domain/`** — `repositories/` (abstract interfaces only:
-  `IVehicleRepository`, `ITelemetryRepository`, `IProvisioningRepository`,
+  `IVehicleRepository`, `ITelemetryRepository`, `IDevicePairingRepository`,
   `IDeepLinkRepository`) and `usecases/` (one class per action:
   `ConnectToVehicle`, `ReadLiveSample`, `NegotiateTelemetry`,
-  `SaveProvisioning`, `LoadProvisioning`, `ParseProvisioningLink`,
-  `ListenForDeepLinks`, `DisconnectFromVehicle`).
+  `PairDevice`, `AuthenticateDevice`, `LogoutDevice`, `ForgetDevice`,
+  `ListDevicePairings`, `ParseProvisioningLink`, `ListenForDeepLinks`,
+  `DisconnectFromVehicle`).
 - **`lib/data/`** — `models/` (plain data classes), `datasources/`
   (interface + `...Impl` pairs doing actual I/O: sockets, HTTP, files,
   secure storage), `repositories/` (interface implementations composing
@@ -136,7 +137,7 @@ Clean architecture, three layers:
   repository layers it drives.
 - **`lib/presentation/`** — `cubits/` (flutter_bloc `Cubit`s calling use
   cases, exposing `Equatable` state classes) and `screens/` (the two v0
-  screens: connect, status).
+  screens: tuners, status).
 - **`lib/doip/`** — the low-level DoIP wire-protocol codec (header
   pack/parse, constants) — pure functions/data, no I/O, used internally by
   `data/datasources/doip_data_source.dart`.
@@ -168,24 +169,53 @@ Then add the manifest entries `flutter create` doesn't add by default:
   (e.g. "Used to scan a FreeBeamer relay provisioning QR code") and a
   `CFBundleURLTypes` entry registering the `freebeamer` URL scheme.
 
-## Provisioning: one deep link, tapped or scanned
+## Pairing: one disposable deep link, tapped or scanned
 
-`freebeamer-relay client add --public-url https://<relay-domain>` prints a
-`freebeamer://connect?relay_url=...&api_key=...` link alongside the raw API
-key. That one link is the entire provisioning story:
+`freebeamer-relay client pairing-link create --public-url https://<relay-domain>`
+prints a `freebeamer://connect?relay_url=...&pairing_token=...&name=...`
+link. Unlike the old provisioning link, this one carries **no long-lived
+secret** — `pairing_token` is single-use and expires (15 minutes by
+default) — it only bootstraps trust. Redeeming it is what actually
+establishes the device's identity:
+
+1. The device generates its own Ed25519 keypair locally (`PairDevice`,
+   `lib/domain/usecases/pair_device.dart`, via `package:cryptography`) —
+   the private key never leaves it.
+2. It exchanges the public half for a client identity via `POST /v1/pair`
+   (`IDeviceAuthRemoteDataSource`). The relay disposes of the pairing
+   link the instant this succeeds; a second device presenting the same
+   link always fails.
+3. The result (`DevicePairing`: client ID, relay URL, the keypair, when
+   it was paired) is persisted via `IDevicePairingRepository` — plural,
+   since a phone can hold more than one pairing over time, each shown in
+   the tuners panel (`TunersScreen`) for one-tap reconnect.
+
+Delivery of the link itself is unchanged:
 
 - **Tapped** (SMS, email, a webpage — the real customer flow): the OS
   routes it straight to the app via the `VIEW`/`BROWSABLE` intent-filter
   (Android) / `CFBundleURLTypes` (iOS); `DeepLinkListener`
-  (`lib/presentation/widgets/deep_link_listener.dart`) parses it, saves
-  the relay URL/API key, and navigates straight to `StatusScreen` —
-  streaming starts with no manual entry at all.
+  (`lib/presentation/widgets/deep_link_listener.dart`) parses it, calls
+  `PairDevice`, and navigates straight to `StatusScreen` — streaming
+  starts with no manual entry at all. A pairing failure here (link
+  already used/expired, relay unreachable) is silently dropped rather
+  than surfaced — the tuners panel's paste field is where the user
+  retries and sees a proper error.
 - **Scanned**: the same string, delivered by camera instead of a tap —
-  `ConnectScreen`'s "Scan provisioning QR code" button feeds the scanned
-  text through the identical `ParseProvisioningLink` use case.
-- **Manual entry** on `ConnectScreen` still exists as a fallback (typing
-  a relay URL/API key by hand, or a raw `am start -d '...'` intent while
-  testing without a QR image — see below).
+  `TunersScreen`'s "Scan pairing QR code" button feeds the scanned text
+  through the identical `ParseProvisioningLink` use case.
+- **Pasted** on `TunersScreen` as a fallback (typing/pasting a link by
+  hand, or a raw `am start -d '...'` intent while testing without a QR
+  image — see below).
+
+Reconnecting later needs none of this: tapping a saved entry in the
+tuners panel calls `AuthenticateDevice` (challenge → sign with the
+stored private key → session token) directly against the persisted
+`DevicePairing` — no new link, no rescanning. Leaving `StatusScreen`
+("logging out" of that tuning session) revokes the session token
+(`LogoutDevice`, best-effort) but keeps the `DevicePairing` itself;
+explicitly forgetting a tuner in the panel (`ForgetDevice`) is the only
+thing that deletes it.
 
 `freebeamer://` is a **custom URI scheme, not a verified Android App
 Link / iOS Universal Link** — it works today without a live domain, but
@@ -203,14 +233,15 @@ reconstruction lets the *device's* shell interpret an unescaped `&` as a
 job-control operator and silently truncates the URL at the first one:
 
 ```sh
-LINK='freebeamer://connect?relay_url=http%3A%2F%2F10.0.2.2%3A8091%2Fv1%2Ftelemetry&api_key=fh_live_...&host=10.0.2.2&port=13400'
+LINK='freebeamer://connect?relay_url=http%3A%2F%2F10.0.2.2%3A8091%2Fv1%2Ftelemetry&pairing_token=tok_...&name=Bay+3&host=10.0.2.2&port=13400'
 adb shell "am start -a android.intent.action.VIEW -d '$LINK'"
 ```
 
 (`host`/`port` are optional overrides for the adapter address — useful
 for pointing at a mock adapter during testing; a real customer's link
 omits them and the app defaults to MHD's own standard
-`192.168.4.1:13400`.)
+`192.168.4.1:13400`. `name` is a display-name fallback used only if the
+relay's own record for the link is unnamed.)
 
 ## Running the test suite
 

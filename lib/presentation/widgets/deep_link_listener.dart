@@ -3,26 +3,28 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/di/service_locator.dart';
-import '../../data/models/telemetry_config.dart';
+import '../../data/models/device_pairing.dart';
 import '../../domain/usecases/listen_for_deep_links.dart';
+import '../../domain/usecases/pair_device.dart';
 import '../../domain/usecases/parse_provisioning_link.dart';
-import '../../domain/usecases/save_provisioning.dart';
 import '../screens/status_screen.dart';
 
 /// The default MHD/ENET adapter address, per MHD's own guide — used
 /// whenever a deep link doesn't specify host/port itself, since a
 /// customer's link only needs to carry what's specific to *them*
-/// (their relay URL and API key), not the adapter address every
+/// (their relay URL and pairing token), not the adapter address every
 /// customer's own vehicle already has by convention.
 const _defaultAdapterHost = '192.168.4.1';
 const _defaultAdapterPort = 13400;
 
 /// Listens for freebeamer://connect deep links for the app's whole
-/// lifetime (cold start and while running) and, on a valid one,
-/// navigates straight to StatusScreen and starts streaming
-/// immediately — the "customer taps a link, it just connects" flow.
-/// Wraps `child` (the normal app content) rather than replacing it, so
-/// manual entry via ConnectScreen still works as a fallback.
+/// lifetime (cold start and while running) and, on a valid one, pairs
+/// the device (see PairDevice) and navigates straight to StatusScreen
+/// to start streaming immediately — the "customer taps a link, it just
+/// connects" flow. Wraps `child` (the normal app content) rather than
+/// replacing it, so the tuners panel's manual scan/paste path still
+/// works as a fallback (and is what surfaces a proper error if pairing
+/// fails here — see _handleLink's silent-drop below).
 class DeepLinkListener extends StatefulWidget {
   final Widget child;
   final GlobalKey<NavigatorState> navigatorKey;
@@ -36,7 +38,7 @@ class DeepLinkListener extends StatefulWidget {
 class _DeepLinkListenerState extends State<DeepLinkListener> {
   final ListenForDeepLinks _listenForDeepLinks = sl<ListenForDeepLinks>();
   final ParseProvisioningLink _parseProvisioningLink = sl<ParseProvisioningLink>();
-  final SaveProvisioning _saveProvisioning = sl<SaveProvisioning>();
+  final PairDevice _pairDevice = sl<PairDevice>();
   StreamSubscription<Uri>? _subscription;
 
   // package:app_links delivers the link that cold-started the app
@@ -65,18 +67,25 @@ class _DeepLinkListenerState extends State<DeepLinkListener> {
     final payload = _parseProvisioningLink(uri.toString());
     if (payload == null) return;
 
-    await _saveProvisioning(relayUrl: payload.relayUrl, apiKey: payload.apiKey);
-    final telemetryConfig = await buildTelemetryConfig(endpoint: payload.relayUrl, apiKey: payload.apiKey);
+    DevicePairing pairing;
+    try {
+      pairing = await _pairDevice(payload);
+    } catch (_) {
+      // Already used/expired, or the relay was unreachable: the user
+      // can still retry via the tuners panel's paste field, which
+      // surfaces a proper error message.
+      return;
+    }
 
     final navigator = widget.navigatorKey.currentState;
     if (navigator == null) return;
     navigator.pushAndRemoveUntil(
       MaterialPageRoute(
         builder: (_) => StatusScreen(
+          pairing: pairing,
           host: payload.adapterHost ?? _defaultAdapterHost,
           port: payload.adapterPort ?? _defaultAdapterPort,
           deviceId: 'flutter-${DateTime.now().millisecondsSinceEpoch}',
-          telemetryConfig: telemetryConfig,
         ),
       ),
       (route) => false,

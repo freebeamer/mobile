@@ -3,15 +3,17 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 
-/// Returns a short, stable fingerprint of a relay endpoint + API key pair.
-/// It identifies which destination a spool file was written for, without
-/// persisting the raw endpoint/key anywhere on disk — see
-/// [resolveSpoolPath]. Mirrors pkg/telemetry.DestinationID exactly (same
-/// input encoding, same hash, same truncation) and the relay's own existing
-/// practice of storing only a SHA-256 hash of a client's API key, never the
-/// key itself.
-String destinationId(String endpoint, String apiKey) {
-  final bytes = utf8.encode('$endpoint\x00$apiKey');
+/// Returns a short, stable fingerprint of a relay endpoint + device
+/// identity pair. It identifies which destination a spool file was
+/// written for, without persisting the raw endpoint/identity anywhere
+/// on disk — see [resolveSpoolPath]. Mirrors pkg/telemetry.DestinationID's
+/// input encoding, hash, and truncation.
+///
+/// [identity] should be something stable for the destination's whole
+/// lifetime — a paired device's clientId, not its current (rotating)
+/// session token; see buildTelemetryConfig's own doc comment for why.
+String destinationId(String endpoint, String identity) {
+  final bytes = utf8.encode('$endpoint\x00$identity');
   return sha256.convert(bytes).toString().substring(0, 16);
 }
 

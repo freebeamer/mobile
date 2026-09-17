@@ -1,11 +1,18 @@
 import 'package:equatable/equatable.dart';
 
-/// The relay URL + client API key (and, optionally, the adapter's own
-/// host/port) a `freebeamer-relay client add` deep link encodes. One
-/// format, two delivery paths: scanned as a QR code, or tapped as an
-/// actual link (SMS, email, a webpage) — both hand the app the exact
-/// same `freebeamer://connect?...` URI, so both go through tryParse
-/// identically. See docs/freebeamer-relay-v0-plan.md.
+/// The relay URL + single-use pairing token (and, optionally, the
+/// adapter's own host/port) a `freebeamer-relay client pairing-link
+/// create` deep link encodes. One format, two delivery paths: scanned
+/// as a QR code, or tapped as an actual link (SMS, email, a webpage) —
+/// both hand the app the exact same `freebeamer://connect?...` URI, so
+/// both go through tryParse identically. See
+/// docs/freebeamer-relay-v0-plan.md.
+///
+/// Unlike the old provisioning link, this one carries no long-lived
+/// secret: [pairingToken] is single-use and expires (see PairDevice),
+/// bootstrapping trust rather than being the credential itself. The
+/// device generates its own Ed25519 keypair and redeems the token —
+/// see DevicePairing.
 ///
 /// `freebeamer://` is a custom URI scheme, not an HTTPS Android App
 /// Link / iOS Universal Link — it works today without a verified
@@ -21,26 +28,30 @@ class ProvisioningPayload extends Equatable {
   static const linkHost = 'connect';
 
   final String relayUrl;
-  final String apiKey;
+  final String pairingToken;
+  final String displayName;
   final String? adapterHost;
   final int? adapterPort;
 
   const ProvisioningPayload({
     required this.relayUrl,
-    required this.apiKey,
+    required this.pairingToken,
+    this.displayName = '',
     this.adapterHost,
     this.adapterPort,
   });
 
   /// The deep link this payload round-trips through — what
-  /// `freebeamer-relay client add` prints and what a QR code encodes.
+  /// `freebeamer-relay client pairing-link create` prints and what a
+  /// QR code encodes.
   Uri toUri() {
     return Uri(
       scheme: scheme,
       host: linkHost,
       queryParameters: {
         'relay_url': relayUrl,
-        'api_key': apiKey,
+        'pairing_token': pairingToken,
+        if (displayName.isNotEmpty) 'name': displayName,
         if (adapterHost != null) 'host': adapterHost,
         if (adapterPort != null) 'port': adapterPort.toString(),
       },
@@ -58,18 +69,20 @@ class ProvisioningPayload extends Equatable {
       return null;
     }
     final relayUrl = uri.queryParameters['relay_url'];
-    final apiKey = uri.queryParameters['api_key'];
+    final pairingToken = uri.queryParameters['pairing_token'];
     if (relayUrl == null || relayUrl.isEmpty) return null;
-    if (apiKey == null || apiKey.isEmpty) return null;
+    if (pairingToken == null || pairingToken.isEmpty) return null;
 
     return ProvisioningPayload(
       relayUrl: relayUrl,
-      apiKey: apiKey,
+      pairingToken: pairingToken,
+      displayName: uri.queryParameters['name'] ?? '',
       adapterHost: uri.queryParameters['host'],
       adapterPort: int.tryParse(uri.queryParameters['port'] ?? ''),
     );
   }
 
   @override
-  List<Object?> get props => [relayUrl, apiKey, adapterHost, adapterPort];
+  List<Object?> get props =>
+      [relayUrl, pairingToken, displayName, adapterHost, adapterPort];
 }

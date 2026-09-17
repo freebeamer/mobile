@@ -165,4 +165,75 @@ void main() {
         throwsA(isA<StateError>()));
     await service.stop();
   });
+
+  test('a single 401 triggers exactly one silent reauthenticate-and-retry',
+      () async {
+    remote.authFailuresRemaining = 1;
+    var reauthCalls = 0;
+    await service.start(
+      config: config,
+      interval: const Duration(milliseconds: 10),
+      reauthenticate: () async {
+        reauthCalls++;
+        return 'refreshed-token';
+      },
+    );
+    service.enqueue(sampleFor('a'));
+    await waitFor(() => remote.postedIds.contains('a'));
+    await service.stop();
+
+    expect(reauthCalls, 1);
+    expect(remote.postedApiKeys, ['refreshed-token']);
+    // Delivery succeeded on the retry, so the sample never sat in the
+    // backing-off state for the test to observe.
+    expect(remote.postedIds, ['a']);
+  });
+
+  test('a second consecutive 401 falls through to normal backoff', () async {
+    // The first post() fails, triggering the one-time reauth retry; that
+    // retry's post() fails too (still-bad-token), so this must give up
+    // rather than looping.
+    remote.authFailuresRemaining = 2;
+    var reauthCalls = 0;
+    await service.start(
+      config: config,
+      interval: const Duration(milliseconds: 10),
+      reauthenticate: () async {
+        reauthCalls++;
+        return 'still-bad-token';
+      },
+    );
+    service.enqueue(sampleFor('a'));
+    await waitFor(() => service.status.uploadState == TelemetryUploadState.backingOff);
+    await service.stop();
+
+    expect(reauthCalls, 1); // not retried a second time in the same attempt
+    expect(remote.postedIds, isEmpty);
+  });
+
+  test('a null reauthenticate result gives up rather than retrying forever',
+      () async {
+    remote.authFailuresRemaining = 1;
+    await service.start(
+      config: config,
+      interval: const Duration(milliseconds: 10),
+      reauthenticate: () async => null, // e.g. the pairing was forgotten
+    );
+    service.enqueue(sampleFor('a'));
+    await waitFor(() => service.status.uploadState == TelemetryUploadState.backingOff);
+    await service.stop();
+
+    expect(remote.postedIds, isEmpty);
+  });
+
+  test('no reauthenticate callback just fails through like any other error',
+      () async {
+    remote.authFailuresRemaining = 1;
+    await service.start(config: config, interval: const Duration(milliseconds: 10));
+    service.enqueue(sampleFor('a'));
+    await waitFor(() => service.status.uploadState == TelemetryUploadState.backingOff);
+    await service.stop();
+
+    expect(remote.postedIds, isEmpty);
+  });
 }

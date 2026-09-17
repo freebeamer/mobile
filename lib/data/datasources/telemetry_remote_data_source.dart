@@ -67,6 +67,9 @@ class TelemetryRemoteDataSourceImpl implements ITelemetryRemoteDataSource {
     })()
         .timeout(timeout);
     if (response.statusCode == 404 || response.statusCode == 405) return 1;
+    if (response.statusCode == 401) {
+      throw TelemetryAuthException('capability check: status 401');
+    }
     if (response.statusCode != 200) {
       throw TelemetryException(
           'capability check: status ${response.statusCode}');
@@ -109,6 +112,9 @@ class TelemetryRemoteDataSourceImpl implements ITelemetryRemoteDataSource {
       return response;
     })()
         .timeout(timeout);
+    if (response.statusCode == 401) {
+      throw TelemetryAuthException('upload failed: status 401');
+    }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw TelemetryException('upload failed: status ${response.statusCode}');
     }

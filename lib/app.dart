@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'presentation/screens/connect_screen.dart';
+import 'presentation/screens/tuners_screen.dart';
 import 'presentation/widgets/deep_link_listener.dart';
 
 /// Module-level so it's created exactly once for the app's lifetime —
@@ -20,7 +20,7 @@ class FreeBeamerMobileApp extends StatelessWidget {
       theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.indigo),
       home: DeepLinkListener(
         navigatorKey: appNavigatorKey,
-        child: const ConnectScreen(),
+        child: const TunersScreen(),
       ),
     );
   }
