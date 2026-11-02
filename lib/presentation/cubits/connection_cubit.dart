@@ -1,5 +1,6 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../core/logging/connection_log.dart';
 import '../../core/telemetry/telemetry_upload_service.dart';
 import '../../data/models/device_pairing.dart';
 import '../../data/models/telemetry_config.dart';
@@ -42,6 +43,7 @@ class ConnectionCubit extends Cubit<VehicleConnectionState> {
       {required String endpoint,
       required String clientId,
       required String sessionToken}) _buildTelemetryConfig;
+  final IConnectionLog _log;
   bool _running = false;
 
   bool _stopRequested = false;
@@ -69,7 +71,9 @@ class ConnectionCubit extends Cubit<VehicleConnectionState> {
             required String clientId,
             required String sessionToken})?
         buildTelemetryConfig,
-  })  : _connectToVehicle = connectToVehicle,
+    IConnectionLog log = const NoopConnectionLog(),
+  })  : _log = log,
+        _connectToVehicle = connectToVehicle,
         _disconnectFromVehicle = disconnectFromVehicle,
         _readLiveSample = readLiveSample,
         _telemetryUploadService = telemetryUploadService,
@@ -92,6 +96,10 @@ class ConnectionCubit extends Cubit<VehicleConnectionState> {
     }
     _running = true;
     _stopRequested = false;
+    _log.log('session',
+        'start: adapter $address:$port, source 0x${sourceAddress.toRadixString(16)}, '
+        'relay ${pairing.relayUrl.isEmpty ? '(none)' : pairing.relayUrl}');
+    await logNetworkInterfaces(_log, targetHost: address);
     emit(state.copyWith(
         status: ConnectionStatus.connecting,
         clearConnectionError: true,
@@ -106,7 +114,9 @@ class ConnectionCubit extends Cubit<VehicleConnectionState> {
       try {
         sessionToken = await _authenticateDevice(pairing);
         _currentSessionToken = sessionToken;
-      } catch (_) {
+        _log.log('relay', 'device authenticated');
+      } catch (e) {
+        _log.log('relay', 'device authentication failed (continuing, samples buffer locally): $e');
         // Unreachable/offline, or the pairing was revoked: proceed
         // with an empty token — delivery falls back to buffering.
       }
@@ -118,15 +128,19 @@ class ConnectionCubit extends Cubit<VehicleConnectionState> {
       var version = telemetryVersion;
       try {
         version = await _negotiateTelemetry(config: telemetryConfig);
-      } catch (_) {
+        _log.log('relay', 'negotiated telemetry v$version');
+      } catch (e) {
+        _log.log('relay', 'capability negotiation failed (continuing, samples buffer locally): $e');
         // Unknown/offline: retain v2 identity locally. Delivery checks again.
       }
       if (_stopRequested || isClosed) return;
       final session =
           version == telemetryVersion ? TelemetrySession.create() : null;
       var sequence = 0;
-      await _connectToVehicle(
+      _log.log('session', 'connecting to adapter…');
+      final target = await _connectToVehicle(
           address: address, port: port, sourceAddress: sourceAddress);
+      _log.log('session', 'adapter connected, routing activated; target 0x${target.toRadixString(16)}');
       if (_stopRequested || isClosed) return;
       await _telemetryUploadService.start(
           config: telemetryConfig,
@@ -134,8 +148,13 @@ class ConnectionCubit extends Cubit<VehicleConnectionState> {
           reauthenticate: () => _reauthenticate(pairing));
       emit(state.copyWith(status: ConnectionStatus.streaming));
 
+      var reads = 0;
       while (!_stopRequested && !isClosed) {
         final values = await _readLiveSample(timeout: requestTimeout);
+        if (reads++ == 0) {
+          _log.log('session',
+              'first live sample decoded: ${values.map((v) => '${v.field.title}=${v.value.toStringAsFixed(2)}').join(', ')}');
+        }
         final sample = TelemetrySample.fromMhdValues(
             deviceId: deviceId,
             timestamp: DateTime.now(),
@@ -151,7 +170,9 @@ class ConnectionCubit extends Cubit<VehicleConnectionState> {
         await Future.delayed(sampleInterval);
       }
       if (!isClosed) emit(state.copyWith(status: ConnectionStatus.stopped));
-    } catch (e) {
+    } catch (e, st) {
+      _log.log('session', 'FAILED: ${e.runtimeType}: $e');
+      _log.log('session', 'stack: ${st.toString().split('\n').take(6).join(' | ')}');
       if (!isClosed) {
         emit(state.copyWith(
             status: ConnectionStatus.error, connectionError: e.toString()));
@@ -168,6 +189,7 @@ class ConnectionCubit extends Cubit<VehicleConnectionState> {
               state.status != ConnectionStatus.error) {
             emit(state.copyWith(status: ConnectionStatus.stopped));
           }
+          _log.log('session', 'session ended');
           _running = false;
         }
       }

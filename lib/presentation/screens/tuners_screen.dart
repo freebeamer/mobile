@@ -6,6 +6,7 @@ import '../../core/di/service_locator.dart';
 import '../../data/models/device_pairing.dart';
 import '../cubits/tuners_cubit.dart';
 import '../cubits/tuners_state.dart';
+import 'log_screen.dart';
 import 'status_screen.dart';
 
 /// The app's home screen: every tuning session this phone has ever
@@ -97,7 +98,17 @@ class _TunersScreenState extends State<TunersScreen> {
     return BlocProvider.value(
       value: _cubit,
       child: Scaffold(
-        appBar: AppBar(title: const Text('FreeBeamer')),
+        appBar: AppBar(
+          title: const Text('FreeBeamer'),
+          actions: [
+            IconButton(
+              tooltip: 'Connection log',
+              icon: const Icon(Icons.article_outlined),
+              onPressed: () => Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => const LogScreen())),
+            ),
+          ],
+        ),
         body: BlocBuilder<TunersCubit, TunersState>(
           builder: (context, state) {
             return Padding(

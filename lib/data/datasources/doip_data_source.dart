@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../../core/logging/connection_log.dart';
 import '../../doip/frame.dart';
 import '../../doip/payload_types.dart';
 
@@ -37,6 +38,9 @@ class DoipDataSourceImpl implements IDoipDataSource {
   _SocketByteReader? _reader;
   int _sourceAddress = 0;
   int? _targetAddress;
+  final IConnectionLog _log;
+
+  DoipDataSourceImpl({IConnectionLog log = const NoopConnectionLog()}) : _log = log;
 
   @override
   int? get targetAddress => _targetAddress;
@@ -49,9 +53,25 @@ class DoipDataSourceImpl implements IDoipDataSource {
     // leak its socket/reader while silently overwriting the fields
     // in-flight readers/writers still reference.
     await close();
-    final socket = await Socket.connect(address, port, timeout: timeout);
+    _log.log('doip', 'dialing TCP $address:$port (timeout ${timeout.inMilliseconds}ms)');
+    final started = DateTime.now();
+    final Socket socket;
+    try {
+      socket = await Socket.connect(address, port, timeout: timeout);
+    } catch (e) {
+      final ms = DateTime.now().difference(started).inMilliseconds;
+      _log.log('doip', 'TCP dial FAILED after ${ms}ms: ${e.runtimeType}: $e');
+      rethrow;
+    }
+    final ms = DateTime.now().difference(started).inMilliseconds;
+    try {
+      _log.log('doip',
+          'TCP connected in ${ms}ms: local ${socket.address.address}:${socket.port} -> remote ${socket.remoteAddress.address}:${socket.remotePort}');
+    } catch (_) {
+      _log.log('doip', 'TCP connected in ${ms}ms');
+    }
     _socket = socket;
-    _reader = _SocketByteReader(socket);
+    _reader = _SocketByteReader(socket, _log);
     _targetAddress = null;
   }
 
@@ -62,6 +82,8 @@ class DoipDataSourceImpl implements IDoipDataSource {
     Duration timeout = const Duration(seconds: 2),
   }) async {
     _sourceAddress = sourceAddress;
+    _log.log('doip',
+        'routing activation: source 0x${_hex4(sourceAddress)}, type 0x${activationType.toRadixString(16).padLeft(2, '0')}');
     final payload = ByteData(7);
     payload.setUint16(0, sourceAddress, Endian.big);
     payload.setUint8(2, activationType);
@@ -80,10 +102,14 @@ class DoipDataSourceImpl implements IDoipDataSource {
     }
     final responderAddress = ByteData.sublistView(body).getUint16(2, Endian.big);
     final code = body[4];
+    _log.log('doip',
+        'routing activation response: client 0x${_hex4(ByteData.sublistView(body).getUint16(0, Endian.big))}, '
+        'responder 0x${_hex4(responderAddress)}, code 0x${code.toRadixString(16).padLeft(2, '0')} (${describeRoutingCode(code)})');
     if (code != routingSuccess && code != routingSuccessConfirmationRequired) {
       throw DoipException('routing activation denied: ${describeRoutingCode(code)}');
     }
     _targetAddress = responderAddress;
+    _log.log('doip', 'diagnostic target set to responder 0x${_hex4(responderAddress)}');
     return responderAddress;
   }
 
@@ -99,6 +125,7 @@ class DoipDataSourceImpl implements IDoipDataSource {
     addresses.setUint16(2, target, Endian.big);
     payload.add(addresses.buffer.asUint8List());
     payload.add(request);
+    _log.log('uds', 'request 0x${_hex4(_sourceAddress)} -> 0x${_hex4(target)}: ${hex(request)}');
     await _send(payloadDiagnosticMessage, payload.toBytes());
 
     final deadline = DateTime.now().add(timeout);
@@ -125,6 +152,10 @@ class DoipDataSourceImpl implements IDoipDataSource {
           if (body.length < 4) {
             throw DoipException('malformed diagnostic message');
           }
+          final view = ByteData.sublistView(body);
+          _log.log('uds',
+              'reply from 0x${_hex4(view.getUint16(0, Endian.big))} to 0x${_hex4(view.getUint16(2, Endian.big))}: ${hex(body.sublist(4))}'
+              '${body.length > 4 && body[4] == 0x7F ? '  <-- NEGATIVE RESPONSE' : ''}');
           return Uint8List.sublistView(body, 4);
         default:
           // Unrelated DoIP traffic (e.g. an alive check request);
@@ -136,6 +167,7 @@ class DoipDataSourceImpl implements IDoipDataSource {
 
   @override
   Future<void> close() async {
+    if (_socket != null) _log.log('doip', 'closing connection');
     await _reader?.close();
     await _socket?.close();
     _socket = null;
@@ -148,8 +180,15 @@ class DoipDataSourceImpl implements IDoipDataSource {
     if (socket == null) {
       throw DoipException('not connected; call connect first');
     }
-    socket.add(packMessage(protocolVersion2012, payloadType, payload));
-    await socket.flush();
+    final frame = packMessage(protocolVersion2012, payloadType, payload);
+    _log.log('tx', 'type 0x${_hex4(payloadType)}: ${hex(frame)}');
+    try {
+      socket.add(frame);
+      await socket.flush();
+    } catch (e) {
+      _log.log('tx', 'send FAILED: ${e.runtimeType}: $e');
+      rethrow;
+    }
   }
 
   Future<(int, Uint8List)> _receive(Duration timeout) async {
@@ -157,11 +196,22 @@ class DoipDataSourceImpl implements IDoipDataSource {
     if (reader == null) {
       throw DoipException('not connected; call connect first');
     }
-    final header = parseHeader(await reader.readExactly(headerSize, timeout));
-    if (header.payloadLength > maxPayloadLength) {
-      throw DoipException('message too large: ${header.payloadLength} byte(s)');
+    Uint8List rawHeader = Uint8List(0);
+    final DoipHeader header;
+    final Uint8List body;
+    try {
+      rawHeader = await reader.readExactly(headerSize, timeout);
+      header = parseHeader(rawHeader);
+      if (header.payloadLength > maxPayloadLength) {
+        throw DoipException('message too large: ${header.payloadLength} byte(s)');
+      }
+      body = await reader.readExactly(header.payloadLength, timeout);
+    } catch (e) {
+      _log.log('rx',
+          'receive FAILED: $e (bytes received but unparsed: ${hex([...rawHeader, ...reader.pending])})');
+      rethrow;
     }
-    final body = await reader.readExactly(header.payloadLength, timeout);
+    _log.log('rx', 'type 0x${_hex4(header.payloadType)}: ${hex([...rawHeader, ...body])}');
     if (header.payloadType == payloadGenericNegativeAck) {
       final code = body.isNotEmpty ? body[0] : 0;
       throw DoipException('generic negative acknowledgement, code 0x${code.toRadixString(16)}');
@@ -188,17 +238,24 @@ class _SocketByteReader {
   Object? _error;
   bool _done = false;
 
-  _SocketByteReader(Socket socket) {
+  final IConnectionLog _log;
+
+  /// Bytes received but not yet consumed — for diagnostics.
+  Uint8List get pending => _buffer;
+
+  _SocketByteReader(Socket socket, this._log) {
     _subscription = socket.listen(
       (chunk) {
         _buffer = Uint8List.fromList([..._buffer, ...chunk]);
         _wake();
       },
       onError: (Object error) {
+        _log.log('rx', 'socket error: ${error.runtimeType}: $error');
         _error = error;
         _wake();
       },
       onDone: () {
+        _log.log('rx', 'remote closed the connection (${_buffer.length} unread byte(s))');
         _done = true;
         _wake();
       },
@@ -240,3 +297,5 @@ class _SocketByteReader {
     await _subscription?.cancel();
   }
 }
+
+String _hex4(int v) => v.toRadixString(16).padLeft(4, '0').toUpperCase();

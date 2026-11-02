@@ -10,6 +10,7 @@ import '../../data/models/device_pairing.dart';
 import '../../domain/usecases/logout_device.dart';
 import '../cubits/connection_cubit.dart';
 import '../cubits/connection_state.dart';
+import 'log_screen.dart';
 
 /// Shows connection/streaming status and the last-seen field values —
 /// a client-side sanity check, not a dashboard. Gauges/charts/history
@@ -87,7 +88,17 @@ class _StatusScreenState extends State<StatusScreen> with WidgetsBindingObserver
     return BlocProvider.value(
       value: _cubit,
       child: Scaffold(
-        appBar: AppBar(title: Text('${widget.host}:${widget.port}')),
+        appBar: AppBar(
+          title: Text('${widget.host}:${widget.port}'),
+          actions: [
+            IconButton(
+              tooltip: 'Connection log',
+              icon: const Icon(Icons.article_outlined),
+              onPressed: () => Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => const LogScreen())),
+            ),
+          ],
+        ),
         body: BlocBuilder<ConnectionCubit, VehicleConnectionState>(
           builder: (context, state) {
             return Padding(

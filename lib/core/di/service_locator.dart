@@ -28,6 +28,7 @@ import '../../domain/usecases/read_live_sample.dart';
 import '../../domain/usecases/negotiate_telemetry.dart';
 import '../../presentation/cubits/connection_cubit.dart';
 import '../../presentation/cubits/tuners_cubit.dart';
+import '../logging/connection_log.dart';
 import '../telemetry/telemetry_upload_service.dart';
 
 final GetIt sl = GetIt.instance;
@@ -38,10 +39,13 @@ final GetIt sl = GetIt.instance;
 /// file and its own tests — everywhere else resolves dependencies as
 /// `sl<ISomething>()`.
 void setupServiceLocator() {
+  // Diagnostic connection log, shared app-wide.
+  sl.registerLazySingleton<IConnectionLog>(() => ConnectionLogImpl());
+
   // Data sources.
   sl.registerLazySingleton<ISecureStorageDataSource>(
       () => SecureStorageDataSourceImpl());
-  sl.registerLazySingleton<IDoipDataSource>(() => DoipDataSourceImpl());
+  sl.registerLazySingleton<IDoipDataSource>(() => DoipDataSourceImpl(log: sl()));
   sl.registerLazySingleton<IMhdDataSource>(() => MhdDataSourceImpl(sl()));
   sl.registerLazySingleton<ITelemetryRemoteDataSource>(
       () => TelemetryRemoteDataSourceImpl());
@@ -94,6 +98,7 @@ void setupServiceLocator() {
       telemetryUploadService: sl(),
       negotiateTelemetry: sl(),
       authenticateDevice: sl(),
+      log: sl(),
     ),
   );
   sl.registerFactory(
