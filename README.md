@@ -9,7 +9,7 @@ Experimental Flutter companion for read-only MHD/ENET live-data acquisition and 
 
 Flutter companion for read-only acquisition, local buffering, QR/deep-link provisioning, and relay upload. Physical vehicle compatibility is unverified; iOS has not been built or validated.
 
-See [mobile setup and implementation notes](docs/mobile-development.md), including required Android/iOS platform generation and permissions. Platform folders are not part of this source snapshot.
+See [mobile setup and implementation notes](docs/mobile-development.md), including iOS platform generation. The Android platform folder is committed.
 
 ## Development
 

@@ -8,10 +8,9 @@
 .packages
 build/
 
-# flutter create --platforms=android,ios . (see README.md) generates
-# these; not committed here since they're regenerated tooling output,
-# not hand-authored source.
-android/
+# The Android platform folder is committed: it carries hand-edited
+# permissions, the freebeamer:// intent filter and the application ID.
+# iOS has not been generated or validated yet.
 ios/
 
 *.iml
