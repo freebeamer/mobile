@@ -7,7 +7,7 @@ Experimental Flutter companion for read-only MHD/ENET live-data acquisition and 
 > [!WARNING]
 > Experimental software. Not validated for vehicle use. Do not flash files produced by FreeBeamer.
 
-Flutter companion for read-only acquisition, local buffering, QR/deep-link provisioning, and relay upload. Physical vehicle compatibility is unverified; iOS has not been built or validated.
+Flutter companion for read-only acquisition, local buffering, QR/deep-link device pairing, and relay upload. Physical vehicle compatibility is unverified; iOS has not been built or validated.
 
 See [mobile setup and implementation notes](docs/mobile-development.md), including iOS platform generation. The Android platform folder is committed.
 
