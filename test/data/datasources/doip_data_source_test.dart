@@ -14,7 +14,7 @@ class _MockConnReader {
   final Socket socket;
   // A plain Uint8List reassigned on every read/write, not a
   // BytesBuilder — see the matching comment on the production
-  // _SocketByteReader in lib/data/datasources/doip_data_source.dart
+  // SocketByteReader in lib/core/net/socket_byte_reader.dart
   // for why.
   Uint8List _buffer = Uint8List(0);
   final List<Completer<void>> _waiters = [];
