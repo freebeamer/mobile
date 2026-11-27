@@ -7,6 +7,7 @@ import '../../data/models/device_pairing.dart';
 import '../../domain/usecases/listen_for_deep_links.dart';
 import '../../domain/usecases/pair_device.dart';
 import '../../domain/usecases/parse_provisioning_link.dart';
+import '../../hsfz/frame.dart';
 import '../screens/status_screen.dart';
 
 /// The default MHD/ENET adapter address, per MHD's own guide — used
@@ -15,7 +16,9 @@ import '../screens/status_screen.dart';
 /// (their relay URL and pairing token), not the adapter address every
 /// customer's own vehicle already has by convention.
 const _defaultAdapterHost = '192.168.4.1';
-const _defaultAdapterPort = 13400;
+// HSFZ: what MHD's WiFi-ENET adapter serves; other ports are found by
+// EnetDataSourceImpl's fallback scan.
+const _defaultAdapterPort = hsfzDefaultTcpPort;
 
 /// Listens for freebeamer://connect deep links for the app's whole
 /// lifetime (cold start and while running) and, on a valid one, pairs

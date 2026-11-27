@@ -4,6 +4,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../core/di/service_locator.dart';
 import '../../data/models/device_pairing.dart';
+import '../../hsfz/frame.dart';
 import '../cubits/tuners_cubit.dart';
 import '../cubits/tuners_state.dart';
 import 'log_screen.dart';
@@ -24,7 +25,7 @@ class TunersScreen extends StatefulWidget {
 class _TunersScreenState extends State<TunersScreen> {
   late final TunersCubit _cubit;
   final _hostController = TextEditingController(text: '192.168.4.1');
-  final _portController = TextEditingController(text: '13400');
+  final _portController = TextEditingController(text: '$hsfzDefaultTcpPort');
   final _linkController = TextEditingController();
 
   @override
@@ -58,7 +59,7 @@ class _TunersScreenState extends State<TunersScreen> {
 
   void _connect(DevicePairing pairing) {
     final host = _hostController.text.trim();
-    final port = int.tryParse(_portController.text.trim()) ?? 13400;
+    final port = int.tryParse(_portController.text.trim()) ?? hsfzDefaultTcpPort;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => StatusScreen(
@@ -121,7 +122,11 @@ class _TunersScreenState extends State<TunersScreen> {
                   ),
                   TextField(
                     controller: _portController,
-                    decoration: const InputDecoration(labelText: 'Port'),
+                    decoration: const InputDecoration(
+                      labelText: 'Port',
+                      helperText: '6801 = BMW ENET (HSFZ). If nothing answers, '
+                          'other ports are scanned automatically.',
+                    ),
                     keyboardType: TextInputType.number,
                   ),
                   const SizedBox(height: 20),

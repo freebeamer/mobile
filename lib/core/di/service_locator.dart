@@ -3,6 +3,8 @@ import 'package:get_it/get_it.dart';
 import '../../data/datasources/deep_link_data_source.dart';
 import '../../data/datasources/device_auth_remote_data_source.dart';
 import '../../data/datasources/doip_data_source.dart';
+import '../../data/datasources/enet_data_source.dart';
+import '../../data/datasources/hsfz_data_source.dart';
 import '../../data/datasources/mhd_data_source.dart';
 import '../../data/datasources/secure_storage_data_source.dart';
 import '../../data/datasources/telemetry_local_data_source.dart';
@@ -45,7 +47,13 @@ void setupServiceLocator() {
   // Data sources.
   sl.registerLazySingleton<ISecureStorageDataSource>(
       () => SecureStorageDataSourceImpl());
-  sl.registerLazySingleton<IDoipDataSource>(() => DoipDataSourceImpl(log: sl()));
+  // ENET link: auto-detects HSFZ (BMW F-series, port 6801) or DoIP and
+  // falls back to scanning the adapter's ports. See EnetDataSourceImpl.
+  sl.registerLazySingleton<IDoipDataSource>(() => EnetDataSourceImpl(
+        doip: DoipDataSourceImpl(log: sl()),
+        hsfz: HsfzDataSourceImpl(log: sl()),
+        log: sl(),
+      ));
   sl.registerLazySingleton<IMhdDataSource>(() => MhdDataSourceImpl(sl()));
   sl.registerLazySingleton<ITelemetryRemoteDataSource>(
       () => TelemetryRemoteDataSourceImpl());

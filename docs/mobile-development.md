@@ -238,8 +238,9 @@ adb shell "am start -a android.intent.action.VIEW -d '$LINK'"
 
 (`host`/`port` are optional overrides for the adapter address — useful
 for pointing at a mock adapter during testing; a real customer's link
-omits them and the app defaults to MHD's own standard
-`192.168.4.1:13400`. `name` is a display-name fallback used only if the
+omits them and the app defaults to `192.168.4.1:6801`: HSFZ, the port
+MHD's adapter was observed serving. DoIP is auto-detected, and other
+ports are found by the fallback scan in `EnetDataSourceImpl`. `name` is a display-name fallback used only if the
 relay's own record for the link is unnamed.)
 
 ## Running the test suite
